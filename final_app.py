@@ -6,7 +6,7 @@ import re
 from scipy.stats import chi2_contingency
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Dental Clinical Masterpiece", layout="wide")
+st.set_page_config(page_title="Dental Clinical Analysis", layout="wide")
 st.markdown("""
 <style>
     .stat-box { background-color: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 5px solid #3498db; }
