@@ -183,7 +183,7 @@ valid_ids = df_filtered['Codice'].unique()
 teeth_filtered = df_teeth[df_teeth['Codice'].isin(valid_ids)]
 
 # --- 6. MAIN PAGE ---
-st.title("🦷 Dental Clinical Masterpiece")
+st.title("🦷 Dental Clinical Analysis")
 st.markdown("### Integrated Risk, Prevalence, and Clinical Pathology")
 
 # GLOBAL METRICS
