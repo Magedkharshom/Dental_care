@@ -6,19 +6,34 @@ import re
 from scipy.stats import chi2_contingency
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Dental Clinical Analysis", layout="wide")
+st.set_page_config(page_title="Dental Health Report", layout="wide")
+
+# PROFESSIONAL REPORT STYLING
 st.markdown("""
 <style>
-    .stat-box { background-color: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 5px solid #3498db; }
-    h3 { margin-top: 30px; border-bottom: 2px solid #eee; padding-bottom: 10px; }
-    .metric-label { font-size: 14px; color: #555; }
-    .metric-val { font-size: 26px; font-weight: bold; }
-    .sig-green { color: #2ecc71; font-weight: bold; }
-    .sig-red { color: #e74c3c; font-weight: bold; }
+    /* Main Layout */
+    .main-header { font-size: 36px; font-weight: 800; color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 20px; margin-bottom: 30px; }
+    .section-header { font-size: 26px; font-weight: 700; color: #34495e; margin-top: 40px; margin-bottom: 15px; border-left: 5px solid #e67e22; padding-left: 15px; }
+    
+    /* Metric Boxes */
+    .stat-card { background: #ffffff; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-top: 5px solid #bdc3c7; text-align: center; }
+    .stat-val { font-size: 32px; font-weight: bold; color: #2c3e50; }
+    .stat-lbl { font-size: 14px; color: #7f8c8d; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+    
+    /* Color coding for metrics */
+    .border-red { border-top-color: #e74c3c; }   /* Decay */
+    .border-purple { border-top-color: #9b59b6; } /* Roots */
+    .border-green { border-top-color: #2ecc71; }  /* Sealants */
+    .border-blue { border-top-color: #3498db; }   /* Fillings */
+    
+    /* Text Boxes */
+    .insight-box { background-color: #e8f6f3; border-left: 5px solid #1abc9c; padding: 20px; border-radius: 5px; color: #2c3e50; font-size: 16px; line-height: 1.6; margin-bottom: 20px; }
+    .warning-box { background-color: #fdedec; border-left: 5px solid #e74c3c; padding: 20px; border-radius: 5px; color: #c0392b; font-size: 16px; line-height: 1.6; margin-bottom: 20px; }
+    .info-text { font-size: 16px; color: #555; line-height: 1.6; margin-bottom: 15px; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. ADVANCED DATA ENGINE ---
+# --- 2. DATA ENGINE ---
 @st.cache_data
 def load_data():
     try:
@@ -28,7 +43,7 @@ def load_data():
         target_sheet = next((s for s in xl.sheet_names if "Formula" in s), None)
         if not target_sheet: st.stop()
         
-        # Find Header
+        # Header Search
         df_preview = pd.read_excel(excel_file, sheet_name=target_sheet, header=None, nrows=15)
         header_idx = -1
         for idx, row in df_preview.iterrows():
@@ -40,14 +55,25 @@ def load_data():
         clinical = pd.read_excel(excel_file, sheet_name=target_sheet, header=header_idx)
         return survey, clinical
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error loading files: {e}")
         st.stop()
 
 survey_raw, clinical_raw = load_data()
 
-# --- 3. PARSING LOGIC (THE HEAVY LIFTING) ---
-def process_full_data(survey_df, clinical_df):
-    # A. CLEAN SURVEY
+# --- 3. MEDICAL DICTIONARY ---
+# Maps ISO codes to human-readable names for the narrative text
+ISO_MAP = {
+    '5.5': 'Upper Right 2nd Baby Molar', '6.5': 'Upper Left 2nd Baby Molar',
+    '7.5': 'Lower Left 2nd Baby Molar', '8.5': 'Lower Right 2nd Baby Molar',
+    '5.4': 'Upper Right 1st Baby Molar', '6.4': 'Upper Left 1st Baby Molar',
+    '7.4': 'Lower Left 1st Baby Molar', '8.4': 'Lower Right 1st Baby Molar',
+    '1.6': 'Upper Right 1st Perm Molar', '2.6': 'Upper Left 1st Perm Molar',
+    '3.6': 'Lower Left 1st Perm Molar', '4.6': 'Lower Right 1st Perm Molar'
+}
+
+# --- 4. PARSING LOGIC ---
+def process_data(survey_df, clinical_df):
+    # Survey Clean
     survey_df['Sesso'] = survey_df['Sesso'].astype(str).str.upper().str.strip()
     survey_df['Has_Cavity'] = survey_df['Ha carie?'].apply(lambda x: 1 if x == 1.0 else 0)
     
@@ -58,7 +84,7 @@ def process_full_data(survey_df, clinical_df):
     survey_df['Soda'] = survey_df['Bevi spesso bibite?'].map(map_yn).fillna('Other')
     survey_df['Dentist'] = survey_df['Sei mai stato/a dal dentista?'].map(map_dent).fillna("Don't Remember")
 
-    # B. IDENTIFY CLINICAL COLUMNS
+    # Column Identification
     try: start = clinical_df.columns.get_loc('Età') + 1
     except: 
         clinical_df.columns = clinical_df.columns.str.strip()
@@ -71,8 +97,7 @@ def process_full_data(survey_df, clinical_df):
         if matches: end = matches[0]; break
     tooth_cols = clinical_df.columns[start:end]
 
-    # C. DETAILED PARSING (PER TOOTH)
-    # We create a "Long Format" dataset where every row is a Damaged Tooth
+    # Parsing Loop
     damage_records = []
     child_summary = []
 
@@ -80,58 +105,53 @@ def process_full_data(survey_df, clinical_df):
         codice = row['Codice']
         stats = {
             'Codice': codice, 
-            'Total_Decay': 0, 'Total_Filled': 0, 'Total_White': 0, 'Total_Roots': 0, 'Total_Sealants': 0,
-            'Baby_Affected': 0, 'Adult_Affected': 0,
-            'Baby_Decay': 0, 'Adult_Decay': 0
+            'Total_Decay': 0, 'Total_Roots': 0, 'Total_Filled': 0, 'Total_Sealants': 0, 'Total_White': 0,
+            'Baby_Decay': 0, 'Baby_Roots': 0, 'Baby_Filled': 0, 'Baby_Sealants': 0,
+            'Adult_Decay': 0, 'Adult_Roots': 0, 'Adult_Filled': 0, 'Adult_Sealants': 0
         }
         
         for col_name in tooth_cols:
             raw_val = str(row[col_name]).upper().strip()
             if raw_val in ['NAN', '-', 'M', 'NONE']: continue
             
-            # SPLIT COMPLEX CODES (e.g. "L/radice + P")
             parts = re.split(r'[ +]+', raw_val)
-            
             for part in parts:
                 condition = 'Healthy'
-                
-                # 1. IDENTIFY CONDITION (HIERARCHY)
                 if 'RADICE' in part or 'RAD' in part: condition = 'Root Residue (Severe)'
                 elif 'D' in part: condition = 'Active Decay'
                 elif 'F' in part: condition = 'Filled'
-                elif 'W' in part: condition = 'White Spot'
                 elif 'S' in part: condition = 'Sealant'
+                elif 'W' in part: condition = 'White Spot'
                 
                 if condition == 'Healthy': continue 
                 
-                # 2. IDENTIFY TOOTH NUMBER & TYPE
                 is_baby = 'L' in part
                 is_adult = 'P' in part
                 
-                # Resolve Column Name to Specific Tooth Number (ISO)
                 tooth_num = col_name
                 if '-' in col_name:
                     options = [x.strip() for x in col_name.split('-')]
-                    if is_baby:
-                        tooth_num = next((x for x in options if x[0] in ['5','6','7','8']), col_name)
-                    elif is_adult:
-                        tooth_num = next((x for x in options if x[0] in ['1','2','3','4']), col_name)
+                    if is_baby: tooth_num = next((x for x in options if x[0] in ['5','6','7','8']), col_name)
+                    elif is_adult: tooth_num = next((x for x in options if x[0] in ['1','2','3','4']), col_name)
                 
-                # 3. UPDATE STATS
+                # Counters
                 if condition == 'Root Residue (Severe)': stats['Total_Roots'] += 1
                 if condition == 'Active Decay': stats['Total_Decay'] += 1
                 if condition == 'Filled': stats['Total_Filled'] += 1
-                if condition == 'White Spot': stats['Total_White'] += 1
                 if condition == 'Sealant': stats['Total_Sealants'] += 1
+                if condition == 'White Spot': stats['Total_White'] += 1
                 
-                if is_baby: 
-                    stats['Baby_Affected'] += 1
-                    if condition in ['Active Decay', 'Root Residue (Severe)']: stats['Baby_Decay'] += 1
-                if is_adult: 
-                    stats['Adult_Affected'] += 1
-                    if condition in ['Active Decay', 'Root Residue (Severe)']: stats['Adult_Decay'] += 1
+                if is_baby:
+                    if condition == 'Active Decay': stats['Baby_Decay'] += 1
+                    if condition == 'Root Residue (Severe)': stats['Baby_Roots'] += 1
+                    if condition == 'Filled': stats['Baby_Filled'] += 1
+                    if condition == 'Sealant': stats['Baby_Sealants'] += 1
+                if is_adult:
+                    if condition == 'Active Decay': stats['Adult_Decay'] += 1
+                    if condition == 'Root Residue (Severe)': stats['Adult_Roots'] += 1
+                    if condition == 'Filled': stats['Adult_Filled'] += 1
+                    if condition == 'Sealant': stats['Adult_Sealants'] += 1
                 
-                # 4. RECORD DETAILED ENTRY
                 damage_records.append({
                     'Codice': codice,
                     'Tooth_Number': tooth_num,
@@ -141,38 +161,35 @@ def process_full_data(survey_df, clinical_df):
 
         child_summary.append(stats)
 
-    # D. MERGE
-    summary_df = pd.DataFrame(child_summary)
-    damage_df = pd.DataFrame(damage_records)
+    merged_survey = pd.merge(survey_df, pd.DataFrame(child_summary), on='Codice', how='left').fillna(0)
     
-    merged_survey = pd.merge(survey_df, summary_df, on='Codice', how='left').fillna(0)
-    
-    if not damage_df.empty:
-        merged_detailed = pd.merge(damage_df, survey_df[['Codice', 'Sweets', 'Soda', 'Dentist']], on='Codice', how='left')
+    if damage_records:
+        merged_detailed = pd.merge(pd.DataFrame(damage_records), survey_df[['Codice', 'Sweets', 'Soda', 'Dentist']], on='Codice', how='left')
     else:
         merged_detailed = pd.DataFrame()
         
     return merged_survey, merged_detailed
 
-df_main, df_teeth = process_full_data(survey_raw, clinical_raw)
+df_main, df_teeth = process_data(survey_raw, clinical_raw)
 
-# --- 4. STATISTICAL ENGINE (Chi-Square) ---
-def calculate_stats(df, group_col, target_col='Has_Cavity'):
-    """Calculates P-value and textual interpretation."""
-    contingency = pd.crosstab(df[group_col], df[target_col])
+# --- 5. STATS ENGINE ---
+def calculate_p_value(df, group_col, target_col='Has_Cavity'):
     try:
-        chi2, p, dof, ex = chi2_contingency(contingency)
+        contingency = pd.crosstab(df[group_col], df[target_col])
+        _, p, _, _ = chi2_contingency(contingency)
         return p
-    except:
-        return 1.0
+    except: return 1.0
 
-# --- 5. SIDEBAR ---
+# --- 6. FILTER SIDEBAR ---
 with st.sidebar:
-    st.header("🔍 Filters")
+    st.image("https://img.icons8.com/color/96/000000/dental-braces.png", width=80)
+    st.title("Study Filters")
     genders = sorted(df_main['Sesso'].unique())
     sel_gender = st.multiselect("Gender", genders, default=genders)
     min_a, max_a = int(df_main['Età'].min()), int(df_main['Età'].max())
     sel_age = st.slider("Age", min_a, max_a, (min_a, max_a))
+    
+    st.info("ℹ️ **Note:** All charts update instantly based on these filters.")
 
 df_filtered = df_main[
     (df_main['Sesso'].isin(sel_gender)) & 
@@ -182,166 +199,182 @@ df_filtered = df_main[
 valid_ids = df_filtered['Codice'].unique()
 teeth_filtered = df_teeth[df_teeth['Codice'].isin(valid_ids)]
 
-# --- 6. MAIN PAGE ---
-st.title("🦷 Dental Clinical Analysis")
-st.markdown("### Integrated Risk, Prevalence, and Clinical Pathology")
+# --- 7. DASHBOARD START ---
+st.markdown("<div class='main-header'>🦷 Pediatric Dental Health Report</div>", unsafe_allow_html=True)
 
-# GLOBAL METRICS
+# SECTION 1: EXECUTIVE METRICS
+st.markdown("<div class='section-header'>1. Executive Summary</div>", unsafe_allow_html=True)
+st.markdown("""
+<div class='info-text'>
+This dashboard provides a comprehensive analysis of the clinical data. 
+The metrics below represent the <b>total burden of disease</b> found in the selected group. 
+Pay close attention to "Root Residues" as they represent the most severe form of neglect.
+</div>
+""", unsafe_allow_html=True)
+
 c1, c2, c3, c4, c5 = st.columns(5)
-c1.markdown(f"<div class='stat-box'><div class='metric-val'>{len(df_filtered)}</div><div class='metric-label'>Children</div></div>", unsafe_allow_html=True)
-c2.markdown(f"<div class='stat-box'><div class='metric-val' style='color:#e74c3c'>{df_filtered['Total_Decay'].sum():.0f}</div><div class='metric-label'>Active Decay</div></div>", unsafe_allow_html=True)
-c3.markdown(f"<div class='stat-box'><div class='metric-val' style='color:#8e44ad'>{df_filtered['Total_Roots'].sum():.0f}</div><div class='metric-label'>Root Residues</div></div>", unsafe_allow_html=True)
-c4.markdown(f"<div class='stat-box'><div class='metric-val' style='color:#f1c40f'>{df_filtered['Total_White'].sum():.0f}</div><div class='metric-label'>White Spots</div></div>", unsafe_allow_html=True)
-c5.markdown(f"<div class='stat-box'><div class='metric-val' style='color:#2ecc71'>{df_filtered['Total_Sealants'].sum():.0f}</div><div class='metric-label'>Sealants</div></div>", unsafe_allow_html=True)
+c1.markdown(f"<div class='stat-card'><div class='stat-val'>{len(df_filtered)}</div><div class='stat-lbl'>Sample Size</div></div>", unsafe_allow_html=True)
+c2.markdown(f"<div class='stat-card border-red'><div class='stat-val'>{df_filtered['Total_Decay'].sum():.0f}</div><div class='stat-lbl'>Active Decay</div></div>", unsafe_allow_html=True)
+c3.markdown(f"<div class='stat-card border-purple'><div class='stat-val'>{df_filtered['Total_Roots'].sum():.0f}</div><div class='stat-lbl'>Root Residues</div></div>", unsafe_allow_html=True)
+c4.markdown(f"<div class='stat-card border-blue'><div class='stat-val'>{df_filtered['Total_Filled'].sum():.0f}</div><div class='stat-lbl'>Past Fillings</div></div>", unsafe_allow_html=True)
+c5.markdown(f"<div class='stat-card border-green'><div class='stat-val'>{df_filtered['Total_Sealants'].sum():.0f}</div><div class='stat-lbl'>Sealants (S)</div></div>", unsafe_allow_html=True)
 
-st.divider()
+# SECTION 2: BABY VS ADULT ANALYSIS
+st.markdown("<div class='section-header'>2. Decay vs. Prevention (Baby vs Adult)</div>", unsafe_allow_html=True)
+st.markdown("""
+<div class='info-text'>
+We separate <b>Baby Teeth (Deciduous)</b> from <b>Adult Teeth (Permanent)</b>. 
+While Baby teeth fall out, decay here is a strong predictor of future problems. 
+<b>Critical Warning:</b> Any damage in the "Adult Teeth" chart is permanent and irreversible.
+</div>
+""", unsafe_allow_html=True)
+# 
 
-# --- 7. NEW SECTION: BABY VS ADULT TEETH BATTLE ---
-st.subheader("👶 vs 🧑 The Deciduous/Permanent Split")
-st.markdown("Comparing the burden of decay between Baby Teeth (Temporary) and Adult Teeth (Permanent).")
+#[Image of deciduous vs permanent dentition]
+
 
 c_baby, c_adult = st.columns(2)
 
 with c_baby:
-    st.markdown("#### Baby Teeth (L)")
-    b_decay = df_filtered['Baby_Decay'].sum()
-    b_filled = df_filtered['Baby_Affected'].sum() - b_decay # Approx
+    vals = [
+        df_filtered['Baby_Decay'].sum() + df_filtered['Baby_Roots'].sum(),
+        df_filtered['Baby_Filled'].sum(),
+        df_filtered['Baby_Sealants'].sum()
+    ]
+    labs = ['Decay & Roots (Bad)', 'Fillings (Repaired)', 'Sealants (Prevention)']
+    colors = ['#e74c3c', '#3498db', '#2ecc71']
     
-    fig_b = go.Figure(data=[go.Pie(labels=['Active Decay', 'Other Damage'], values=[b_decay, b_filled], hole=.6, marker_colors=['#e67e22', '#f39c12'])])
-    fig_b.update_layout(title_text=f"Total Baby Decay: {b_decay:.0f}", height=300)
-    st.plotly_chart(fig_b, use_container_width=True)
+    fig = go.Figure(data=[go.Pie(labels=labs, values=vals, hole=.5, marker_colors=colors)])
+    fig.update_layout(title_text="<b>Baby Teeth (Deciduous)</b>", height=300, margin=dict(t=40, b=0))
+    st.plotly_chart(fig, use_container_width=True)
 
 with c_adult:
-    st.markdown("#### Adult Teeth (P)")
-    a_decay = df_filtered['Adult_Decay'].sum()
-    a_filled = df_filtered['Adult_Affected'].sum() - a_decay
+    vals_a = [
+        df_filtered['Adult_Decay'].sum() + df_filtered['Adult_Roots'].sum(),
+        df_filtered['Adult_Filled'].sum(),
+        df_filtered['Adult_Sealants'].sum()
+    ]
     
-    fig_a = go.Figure(data=[go.Pie(labels=['Active Decay', 'Other Damage'], values=[a_decay, a_filled], hole=.6, marker_colors=['#2980b9', '#3498db'])])
-    fig_a.update_layout(title_text=f"Total Adult Decay: {a_decay:.0f}", height=300)
-    st.plotly_chart(fig_a, use_container_width=True)
+    fig = go.Figure(data=[go.Pie(labels=labs, values=vals_a, hole=.5, marker_colors=colors)])
+    fig.update_layout(title_text="<b>Adult Teeth (Permanent)</b>", height=300, margin=dict(t=40, b=0))
+    st.plotly_chart(fig, use_container_width=True)
 
-st.info("**Insight:** If the Blue Ring (Adult) has a large 'Active Decay' section, it indicates permanent damage that will affect the child for life.")
+# Automated Narrative for Section 2
+adult_decay_count = df_filtered['Adult_Decay'].sum() + df_filtered['Adult_Roots'].sum()
+sealant_count = df_filtered['Adult_Sealants'].sum()
 
-st.divider()
+if adult_decay_count > 0:
+    st.markdown(f"""
+    <div class='warning-box'>
+    <b>⚠️ Clinical Alert:</b> We have detected <b>{adult_decay_count}</b> rotting Permanent (Adult) teeth. 
+    In a cohort of this age (Mixed Dentition), the permanent teeth have only recently erupted. 
+    Finding active decay this early indicates a high-risk oral environment.
+    </div>
+    """, unsafe_allow_html=True)
 
-# --- 8. GLOBAL TOOTH HEATMAP ---
-st.subheader("🔥 Global Vulnerability Map")
-st.markdown("Which specific teeth are rotting the most across the entire selected population? (Based on ISO Numbering)")
+if sealant_count < (len(df_filtered) * 0.5): # Arbitrary threshold for narrative
+    st.markdown(f"""
+    <div class='insight-box'>
+    <b>💡 Prevention Gap:</b> Only <b>{sealant_count}</b> adult teeth have Sealants (Sigillature). 
+    Sealants are the #1 way to prevent cavities in the 6-year molars. 
+    This suggests a massive opportunity to improve preventative care.
+    </div>
+    """, unsafe_allow_html=True)
 
+
+# SECTION 3: HEATMAP
+st.markdown("<div class='section-header'>3. Global Tooth Vulnerability Map</div>", unsafe_allow_html=True)
+st.markdown("""
+<div class='info-text'>
+This chart identifies exactly <b>which teeth</b> are failing. We use the ISO 3950 Numbering System.
+We are looking for the "6-Year Molars" (1.6, 2.6, 3.6, 4.6). If these bars are Red/Purple, it is a serious issue.
+</div>
+""", unsafe_allow_html=True)
+# 
 
 if not teeth_filtered.empty:
-    tooth_counts = teeth_filtered[teeth_filtered['Condition'].isin(['Active Decay', 'Root Residue (Severe)'])]['Tooth_Number'].value_counts().reset_index()
-    tooth_counts.columns = ['Tooth', 'Count']
-    tooth_counts = tooth_counts.sort_values('Count', ascending=False).head(15)
+    heatmap_data = teeth_filtered.groupby(['Tooth_Number', 'Condition']).size().reset_index(name='Count')
+    # Filter to top 20 most frequent teeth
+    total_counts = heatmap_data.groupby('Tooth_Number')['Count'].sum().sort_values(ascending=False).head(20).index
+    heatmap_data = heatmap_data[heatmap_data['Tooth_Number'].isin(total_counts)]
     
     fig = px.bar(
-        tooth_counts, x='Tooth', y='Count', color='Count',
-        color_continuous_scale='Reds', text='Count',
-        title="Top 15 Most Damaged Teeth (ISO Codes)"
+        heatmap_data, x='Tooth_Number', y='Count', color='Condition', 
+        title="Top 20 Most Affected Teeth (Stacked History)",
+        color_discrete_map={
+            'Active Decay': '#e74c3c', 
+            'Root Residue (Severe)': '#8e44ad',
+            'Filled': '#3498db',
+            'Sealant': '#2ecc71',
+            'White Spot': '#f1c40f'
+        },
+        category_orders={'Tooth_Number': list(total_counts)}
     )
     st.plotly_chart(fig, use_container_width=True)
+    
+    # Dynamic Tooth Explanation
+    worst_tooth = total_counts[0]
+    worst_tooth_name = ISO_MAP.get(worst_tooth, "Unknown Position")
+    
+    st.markdown(f"""
+    <div class='insight-box'>
+    <b>🔍 Automated Diagnosis:</b><br>
+    The single most affected tooth in this group is <b>#{worst_tooth}</b> ({worst_tooth_name}).<br>
+    This tooth has the highest combined total of Decay, Fillings, and Roots. Treatment plans should prioritize protecting this specific molar in younger children.
+    </div>
+    """, unsafe_allow_html=True)
 else:
-    st.info("No damage data found for current filter.")
+    st.info("No clinical data available.")
 
-st.divider()
-
-# --- 9. DEEP DIVE ENGINE (THE "HEAVY" PART) ---
-def render_heavy_analysis(question_col, title, group_a, group_b):
-    st.subheader(title)
+# SECTION 4: RISK FACTORS
+def render_risk_factor(col, title, g1, g2):
+    st.markdown(f"<div class='section-header'>{title}</div>", unsafe_allow_html=True)
     
-    # Run Stats
-    p_val = calculate_stats(df_filtered[df_filtered[question_col].isin([group_a, group_b])], question_col)
-    sig_text = "Statistically Significant (P < 0.05)" if p_val < 0.05 else "Not Significant (P > 0.05)"
-    sig_class = "sig-green" if p_val < 0.05 else "sig-red"
+    # Calculate Logic
+    p = calculate_p_value(df_filtered[df_filtered[col].isin([g1, g2])], col)
+    sig_txt = "Significant" if p < 0.05 else "Not Significant"
+    sig_color = "#27ae60" if p < 0.05 else "#95a5a6"
     
-    st.markdown(f"**Statistical Verdict:** <span class='{sig_class}'>{sig_text}</span> (P={p_val:.4f})", unsafe_allow_html=True)
+    st.markdown(f"**Statistical Verdict:** <span style='color:{sig_color}; font-weight:bold'>{sig_txt} (P={p:.4f})</span>", unsafe_allow_html=True)
     
-    col_left, col_right = st.columns([1, 2])
+    c_left, c_right = st.columns([1, 2])
     
-    # --- LEFT: PREVALENCE (The Percentage) ---
-    with col_left:
-        st.markdown("**1. Prevalence (%)**")
-        subset = df_filtered[df_filtered[question_col].isin([group_a, group_b])]
-        stats = subset.groupby(question_col)['Has_Cavity'].mean().reset_index()
-        stats['Rate'] = stats['Has_Cavity'] * 100
+    with c_left:
+        # Prevalence Chart
+        sub = df_filtered[df_filtered[col].isin([g1, g2])]
+        rates = sub.groupby(col)['Has_Cavity'].mean().reset_index()
+        rates['Pct'] = rates['Has_Cavity']*100
+        fig = px.bar(rates, x=col, y='Pct', text=rates['Pct'].apply(lambda x: f"{x:.1f}%"), title="Cavity Prevalence (%)", color=col)
+        fig.update_layout(showlegend=False, height=300)
+        st.plotly_chart(fig, use_container_width=True)
         
-        fig_prev = px.bar(
-            stats, x=question_col, y='Rate', text=stats['Rate'].apply(lambda x: f"{x:.1f}%"),
-            title="Cavity Rate", color=question_col,
-            category_orders={question_col: [group_a, group_b]}
-        )
-        fig_prev.update_layout(showlegend=False, yaxis_range=[0,100], height=300)
-        st.plotly_chart(fig_prev, use_container_width=True)
-
-    # --- RIGHT: CLINICAL REALITY (Stacked Conditions) ---
-    with col_right:
-        st.markdown("**2. Clinical Reality (Total Count by Condition)**")
-        # Sum specific columns
-        cond_stats = subset.groupby(question_col)[['Total_Decay', 'Total_Roots', 'Total_Filled', 'Total_White', 'Total_Sealants']].sum().reset_index()
-        melted = cond_stats.melt(id_vars=question_col, var_name='Condition', value_name='Count')
+    with c_right:
+        # Full Clinical Breakdown (Including Sealants)
+        breakdown = sub.groupby(col)[['Total_Decay', 'Total_Roots', 'Total_Sealants']].sum().reset_index()
+        melted = breakdown.melt(id_vars=col, var_name='Type', value_name='Count')
+        melted['Type'] = melted['Type'].map({'Total_Decay': 'Decay (Bad)', 'Total_Roots': 'Roots (Severe)', 'Total_Sealants': 'Sealants (Good)'})
         
-        melted['Condition'] = melted['Condition'].map({
-            'Total_Decay': 'Active Decay (D)',
-            'Total_Roots': 'Root Residue (Severe)',
-            'Total_Filled': 'Filled (Past)',
-            'Total_White': 'White Spot (Early)',
-            'Total_Sealants': 'Sealants (Good)'
-        })
+        fig = px.bar(melted, x=col, y='Count', color='Type', barmode='group', 
+                     title="Clinical Condition Count",
+                     color_discrete_map={'Decay (Bad)': '#e74c3c', 'Roots (Severe)': '#8e44ad', 'Sealants (Good)': '#2ecc71'})
+        fig.update_layout(height=300)
+        st.plotly_chart(fig, use_container_width=True)
         
-        fig_clin = px.bar(
-            melted, x=question_col, y='Count', color='Condition',
-            title="Total Pathology Burden",
-            barmode='stack', text='Count',
-            color_discrete_map={
-                'Active Decay (D)': '#e74c3c',       # Red
-                'Root Residue (Severe)': '#8e44ad',  # Purple
-                'Filled (Past)': '#3498db',          # Blue
-                'White Spot (Early)': '#f1c40f',     # Yellow
-                'Sealants (Good)': '#2ecc71'         # Green
-            },
-            category_orders={question_col: [group_a, group_b]}
-        )
-        fig_clin.update_layout(height=300)
-        st.plotly_chart(fig_clin, use_container_width=True)
+    # Interpretative Text
+    if p < 0.05:
+        st.markdown(f"""
+        <div class='insight-box'>
+        <b>Correlation Confirmed:</b> There is a statistically significant difference between these two groups. 
+        This suggests that <b>{col}</b> is a genuine driver of dental health outcomes in this population.
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+        <div class='info-text'>
+        <i>Note: The difference here is not statistically significant. This might be due to sample size or other confounding factors.</i>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # --- BOTTOM: TOOTH SPECIFICS (Heatmap Comparison) ---
-    st.markdown("**3. Tooth Vulnerability (Which teeth are hitting them?)**")
-    c_a, c_b = st.columns(2)
-    
-    def plot_tooth_dist(group_name, color):
-        data = teeth_filtered[
-            (teeth_filtered[question_col] == group_name) & 
-            (teeth_filtered['Condition'].isin(['Active Decay', 'Root Residue (Severe)']))
-        ]
-        if data.empty: return None
-        
-        counts = data['Tooth_Number'].value_counts().reset_index().head(8)
-        counts.columns = ['Tooth', 'Count']
-        
-        fig = px.bar(
-            counts, x='Tooth', y='Count', title=f"Top Rotting Teeth in '{group_name}'",
-            text='Count', color_discrete_sequence=[color]
-        )
-        fig.update_layout(height=250)
-        return fig
-
-    with c_a:
-        fig = plot_tooth_dist(group_a, '#e74c3c') # Red for Yes
-        if fig: st.plotly_chart(fig, use_container_width=True)
-        else: st.caption("No data")
-        
-    with c_b:
-        fig = plot_tooth_dist(group_b, '#2980b9') # Blue for No
-        if fig: st.plotly_chart(fig, use_container_width=True)
-        else: st.caption("No data")
-
-    st.divider()
-
-# --- RENDER SECTIONS ---
-render_heavy_analysis('Sweets', "🍭 Analysis: Sweets Consumption", 'Yes', 'No')
-render_heavy_analysis('Soda', "🥤 Analysis: Soda Consumption", 'Yes', 'No')
-render_heavy_analysis('Dentist', "🏥 Analysis: Dentist History", 'Visited', 'Never Visited')
-
-# --- 10. RAW DATA INSPECTOR ---
-with st.expander("🕵️ Clinical Data Inspector"):
-    st.dataframe(df_teeth.sort_values(['Codice', 'Condition']))
+render_risk_factor('Sweets', "4. Sweets Consumption Analysis", 'Yes', 'No')
+render_risk_factor('Soda', "5. Soft Drinks Analysis", 'Yes', 'No')
+render_risk_factor('Dentist', "6. The Dentist Visit Paradox", 'Visited', 'Never Visited')
