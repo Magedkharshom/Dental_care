@@ -559,4 +559,5 @@ with c_final_3:
     """, unsafe_allow_html=True)
 
 st.markdown("<br><hr>", unsafe_allow_html=True)
-st.caption("Report Generated via Stai Sano Dental Analytics Engine | Data Privacy: Anonymized ID")
+#st.caption("Report Generated via Stai Sano Dental Analytics Engine | Data Privacy: Anonymized ID")
+
